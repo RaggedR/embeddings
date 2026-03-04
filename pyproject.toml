@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "embench"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "chromadb>=1.0",
+    "numpy>=1.24",
+    "openai>=1.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx-embeddings"]
+dev = ["pytest>=7.0", "pytest-asyncio"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "embench.emb_metrics"
+manifest-path = "rust/emb-metrics/Cargo.toml"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
