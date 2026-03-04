@@ -7,3 +7,6 @@ __pycache__/
 .env
 dist/
 build/
+*.dSYM/
+.pytest_cache/
+Cargo.lock
