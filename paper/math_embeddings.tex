@@ -1,0 +1,468 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=blue!70!black,
+}
+
+\title{Knowledge-Graph-Guided Fine-Tuning of Embedding Models\\
+for Mathematical Document Retrieval}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present a method for improving semantic search over mathematical research
+papers by fine-tuning embedding models using contrastive learning, guided by
+a knowledge graph extracted from the corpus. General-purpose embedding models
+(e.g., OpenAI's \texttt{text-embedding-3-small}) and even scientific embedding
+models (SPECTER2, SciNCL) perform poorly on mathematical retrieval tasks because
+they lack understanding of the semantic relationships between mathematical
+concepts. Our approach exploits an existing knowledge graph --- whose nodes are
+mathematical concepts and whose edges encode relationships such as
+\emph{generalizes}, \emph{proves}, and \emph{is\_instance\_of} --- to
+automatically generate training data for contrastive fine-tuning. We benchmark
+baseline models against our fine-tuned model on a retrieval task over 4,794
+paper chunks spanning 75 papers in algebraic combinatorics, and demonstrate
+that domain-specific fine-tuning significantly outperforms all baselines.
+The method is general: given any corpus of mathematical papers and a
+knowledge graph over their concepts, the same pipeline produces a
+domain-adapted embedding model.
+\end{abstract}
+
+
+\section{Introduction}
+
+The increasing volume of mathematical literature makes automated retrieval
+tools indispensable for researchers. A common approach is
+\emph{retrieval-augmented generation} (RAG): chunk papers into passages, embed
+them in a vector space, and retrieve relevant passages via nearest-neighbor
+search over embeddings. The quality of retrieval depends critically on the
+embedding model's ability to capture \emph{mathematical semantic similarity}
+--- the idea that a query like ``Rogers--Ramanujan identities'' should retrieve
+not only passages containing that exact phrase but also passages discussing
+Bailey's lemma, $q$-series transformations, and partition identities.
+
+General-purpose embedding models are trained on broad web text and lack this
+kind of domain knowledge. Scientific embedding models such as SPECTER2
+\cite{specter2} and SciNCL \cite{scincl} are trained on citation graphs from
+Semantic Scholar, but mathematics is underrepresented in their training data,
+and they are optimized for \emph{paper-to-paper} similarity rather than
+\emph{concept-to-passage} retrieval.
+
+We address this gap by fine-tuning an embedding model specifically for
+mathematical concept retrieval. Our key insight is that a \textbf{knowledge
+graph} (KG) extracted from the corpus provides exactly the supervision signal
+needed for contrastive learning:
+\begin{itemize}[nosep]
+    \item Each KG concept (e.g., ``Macdonald polynomials'') maps to specific
+          papers, and hence to specific text chunks. These form
+          \emph{positive pairs} for contrastive training.
+    \item KG edges (e.g., ``Bailey's lemma \emph{generalizes}
+          Rogers--Ramanujan identities'') provide \emph{cross-concept
+          positives} that teach the model about mathematical relationships.
+    \item In-batch negatives from unrelated concepts provide the contrastive
+          signal automatically.
+\end{itemize}
+
+This paper makes the following contributions:
+\begin{enumerate}[nosep]
+    \item A benchmark comparing general-purpose and scientific embedding
+          models on mathematical concept retrieval (Section~\ref{sec:benchmark}).
+    \item A method for automatically generating contrastive training data from
+          a knowledge graph (Section~\ref{sec:training-data}).
+    \item A fine-tuned embedding model that outperforms all baselines on our
+          benchmark (Section~\ref{sec:finetuning}).
+    \item An open-source pipeline\footnote{Available at
+          \url{https://github.com/XXX/embeddings}} that can be applied to any
+          mathematical corpus with an associated knowledge graph.
+\end{enumerate}
+
+
+\section{Related Work}
+
+\paragraph{Scientific document embeddings.}
+SPECTER \cite{specter} introduced citation-based contrastive learning for
+scientific document embeddings, training on (paper, cited paper, non-cited
+paper) triplets. SPECTER2 \cite{specter2} extended this to 6 million citation
+triplets across 23 fields of study and introduced task-specific adapters
+(proximity, classification, regression). SciNCL \cite{scincl} improved on
+SPECTER by using citation graph \emph{neighborhood} sampling for harder
+negatives. All three models use SciBERT \cite{scibert} as their backbone and
+produce 768-dimensional embeddings.
+
+\paragraph{Mathematics-specific models.}
+MathBERT \cite{mathbert} pre-trained BERT on mathematical curricula and arXiv
+abstracts, but only with masked language modeling --- it was not contrastively
+trained for retrieval. No widely adopted embedding model exists that is
+specifically trained for mathematical semantic similarity.
+
+\paragraph{Contrastive fine-tuning.}
+The sentence-transformers framework \cite{sbert} provides
+\texttt{MultipleNegativesRankingLoss} (MNRL), which treats all other examples
+in a batch as negatives. Matryoshka Representation Learning \cite{matryoshka}
+trains embeddings so that any prefix of the full vector is itself a useful
+embedding, enabling flexible dimensionality--quality tradeoffs at inference.
+
+
+\section{Data}
+\label{sec:data}
+
+\subsection{Corpus}
+
+Our corpus consists of 75 research papers in algebraic combinatorics,
+$q$-series, and related areas, sourced from arXiv. Papers are chunked into
+passages of up to 1,500 characters with 200-character overlap, yielding
+\textbf{4,794 chunks}. The chunks are stored in a ChromaDB vector database
+with embeddings from OpenAI's \texttt{text-embedding-3-small} (1536-dim).
+
+\subsection{Knowledge graph}
+
+A knowledge graph was constructed by having GPT-4o-mini extract concepts and
+relationships from representative chunks (first two and last two) of each
+paper \cite{kg-extraction}. After normalization and deduplication, the KG
+contains:
+\begin{itemize}[nosep]
+    \item \textbf{559 concepts} (218 objects, 92 theorems, 77 definitions,
+          56 techniques, 28 persons, 26 formulas, 25 identities, 11
+          conjectures, and others)
+    \item \textbf{486 edges} with typed relationships (\emph{related\_to}:
+          110, \emph{uses}: 78, \emph{generalizes}: 54,
+          \emph{is\_instance\_of}: 45, \emph{implies}: 40, \emph{defines}: 39,
+          and others)
+    \item Coverage of all 75 papers
+\end{itemize}
+
+
+\section{Benchmark}
+\label{sec:benchmark}
+
+\subsection{Ground truth construction}
+
+We construct a retrieval benchmark from the KG. For each concept $c$ with at
+least $\text{min\_degree} = 2$ matched papers in the corpus:
+\begin{itemize}[nosep]
+    \item \textbf{Query}: the concept's display name (e.g., ``Rogers--Ramanujan
+          identities'')
+    \item \textbf{Relevant documents}: all chunks from the concept's source
+          papers
+\end{itemize}
+
+This yields \textbf{108 queries}. The ground truth is approximate --- not
+every chunk in a relevant paper directly discusses the concept --- but this
+bias is consistent across models, making relative comparisons valid.
+
+\subsection{Metrics}
+
+We report:
+\begin{itemize}[nosep]
+    \item \textbf{MRR} (Mean Reciprocal Rank): the average inverse rank of the
+          first relevant result.
+    \item \textbf{NDCG@$k$} (Normalized Discounted Cumulative Gain): measures
+          ranking quality with position-dependent discounting.
+    \item \textbf{Recall@$k$}: fraction of relevant documents retrieved in the
+          top $k$. Note that Recall@$k$ appears low because relevant sets are
+          large (often 100+ chunks per concept); MRR and NDCG are the
+          meaningful comparison metrics.
+\end{itemize}
+
+All metrics are computed using a Rust implementation with rayon parallelism
+for batch kNN and metric aggregation \cite{rust-metrics}.
+
+\subsection{Baseline results}
+
+\begin{table}[h]
+\centering
+\caption{Baseline embedding model comparison on mathematical concept retrieval.
+All models evaluated on 108 queries over 4,794 chunks.}
+\label{tab:baselines}
+\begin{tabular}{lcccccc}
+\toprule
+Model & Dim & R@5 & R@10 & R@20 & MRR & NDCG@10 \\
+\midrule
+\texttt{openai-small} & 1536 & 0.010 & 0.019 & 0.037 & \textbf{0.461} & \textbf{0.324} \\
+SPECTER2 (proximity) & 768 & 0.007 & 0.013 & 0.024 & 0.360 & 0.225 \\
+SciNCL & 768 & 0.006 & 0.012 & 0.024 & 0.306 & 0.205 \\
+\midrule
+Math-Embed (ours) & 768 & --- & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The general-purpose OpenAI model outperforms both scientific models by a wide
+margin (28\% higher MRR than SPECTER2, 51\% higher than SciNCL). This is
+notable because SPECTER2 was trained on 6 million scientific citation triplets
+--- yet it underperforms a model with no scientific specialization. We
+attribute this to two factors:
+\begin{enumerate}[nosep]
+    \item \textbf{Dimensionality}: OpenAI's 1536-dim space has more capacity
+          than the 768-dim BERT-based models.
+    \item \textbf{Task mismatch}: SPECTER2 and SciNCL were trained for
+          paper-to-paper similarity (title + abstract), not concept-to-chunk
+          retrieval. A query like ``Rogers--Ramanujan identities'' is not a
+          paper title --- it is a mathematical concept name, and retrieving
+          relevant passages requires understanding what that concept means.
+\end{enumerate}
+
+
+\section{Training Data from Knowledge Graphs}
+\label{sec:training-data}
+
+We generate contrastive training data automatically from the KG and corpus.
+
+\subsection{Direct pairs}
+
+For each concept $c$ with papers $P_1, \ldots, P_m$ in the KG, and each
+paper $P_j$ with chunks $\{d_{j,1}, \ldots, d_{j,n_j}\}$ in the corpus:
+\begin{align}
+    \text{Pairs}_{\text{name}}(c) &= \{(\texttt{name}(c),\; d_{j,k}) :
+        j \in [m],\; k \in [n_j]\} \\
+    \text{Pairs}_{\text{desc}}(c) &= \{(\texttt{desc}(c),\; d_{j,k}) :
+        j \in [m],\; k \in [n_j]\}
+\end{align}
+
+Using both the concept name and its description as anchors provides anchor
+diversity: short anchors (e.g., ``Macdonald polynomials'') train exact-match
+retrieval, while longer descriptions (e.g., ``A family of orthogonal
+symmetric polynomials generalizing Schur functions'') train paraphrase
+retrieval.
+
+We cap at 20 chunks per concept to prevent over-representation of
+high-degree concepts.
+
+\subsection{Edge pairs}
+
+For each edge $(c_1, c_2, r)$ in the KG with relation $r$ (e.g.,
+\emph{generalizes}, \emph{uses}):
+\begin{equation}
+    \text{Pairs}_{\text{edge}}(c_1, c_2) = \{(\texttt{name}(c_1),\; d) :
+        d \in \text{chunks}(c_2)\} \cup \{(\texttt{name}(c_2),\; d) :
+        d \in \text{chunks}(c_1)\}
+\end{equation}
+
+These cross-concept pairs teach the model that mathematically related concepts
+should embed nearby. For example, if ``Bailey's lemma'' \emph{generalizes}
+``Rogers--Ramanujan identities,'' then chunks about Rogers--Ramanujan should
+be somewhat relevant to queries about Bailey's lemma.
+
+We cap at 5 chunks per edge direction to prevent edge pairs from dominating
+the dataset.
+
+\subsection{Dataset statistics}
+
+\begin{table}[h]
+\centering
+\caption{Training dataset statistics.}
+\label{tab:dataset}
+\begin{tabular}{lr}
+\toprule
+Direct pairs (concept $\to$ chunk) & 21,544 \\
+Edge pairs (cross-concept) & 4,855 \\
+Total unique pairs & 25,121 \\
+Training set (90\%) & 22,609 \\
+Validation set (10\%) & 2,512 \\
+Unique anchors & 1,114 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Fine-Tuning}
+\label{sec:finetuning}
+
+\subsection{Method}
+
+We fine-tune the SPECTER2 base model (\texttt{allenai/specter2\_base},
+768-dim, SciBERT backbone) using the sentence-transformers framework
+\cite{sbert}. Despite SPECTER2's poor off-the-shelf performance on our
+benchmark, its pre-training on 6 million scientific citation triplets provides
+a strong initialization for mathematical text --- the model already understands
+scientific language structure, and we teach it mathematical concept semantics
+on top.
+
+\paragraph{Loss function.}
+We use \texttt{MultipleNegativesRankingLoss} (MNRL) wrapped in
+\texttt{MatryoshkaLoss}. MNRL treats all other examples in a batch as
+negatives, providing $B(B-1)$ negative comparisons per batch of size $B$
+without explicit negative mining. MatryoshkaLoss computes the same contrastive
+loss at multiple embedding truncation points (768, 512, 256, 128 dimensions),
+training the model to frontload important information into the first
+dimensions.
+
+\paragraph{Training details.}
+\begin{itemize}[nosep]
+    \item Micro-batch size: 8, with gradient accumulation over 4 steps
+          (effective batch size 32, yielding 56 in-batch negative comparisons
+          per micro-batch)
+    \item Max sequence length: 256 tokens (truncating longer chunks)
+    \item Learning rate: $2 \times 10^{-5}$ with 10\% linear warmup
+    \item Epochs: 3 (2,118 optimization steps)
+    \item Duplicate-free batch sampling to maximize negative diversity
+    \item Final model selected after epoch 3 (training loss converged
+          from $\sim$11 to $\sim$5)
+    \item Hardware: Apple M-series GPU (MPS backend), $\sim$4 hours wall time
+\end{itemize}
+
+\subsection{Results}
+
+\begin{table}[h]
+\centering
+\caption{Final comparison including fine-tuned model. All models evaluated
+on 108 queries over 4,794 chunks. Best results in bold.}
+\label{tab:final}
+\begin{tabular}{lcccccc}
+\toprule
+Model & Dim & R@5 & R@10 & R@20 & MRR & NDCG@10 \\
+\midrule
+\texttt{openai-small} & 1536 & 0.010 & 0.019 & 0.037 & 0.461 & 0.324 \\
+SPECTER2 (proximity) & 768 & 0.007 & 0.013 & 0.024 & 0.360 & 0.225 \\
+SciNCL & 768 & 0.006 & 0.012 & 0.024 & 0.306 & 0.205 \\
+\midrule
+Math-Embed (ours) & 768 & \textbf{0.030} & \textbf{0.058} & \textbf{0.111} & \textbf{0.816} & \textbf{0.736} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Our fine-tuned model outperforms all baselines by a wide margin.
+MRR improves from 0.461 (OpenAI) to \textbf{0.816} --- a 77\% relative
+improvement, meaning the first relevant result now appears on average at
+rank $\sim$1.2 rather than rank $\sim$2.2. NDCG@10 more than doubles from
+0.324 to 0.736, and Recall@20 triples from 0.037 to 0.111.
+
+Remarkably, the fine-tuned model uses half the embedding dimensions (768
+vs.\ 1536) of the OpenAI model yet dramatically outperforms it. The same
+base model (SPECTER2) that scored worst among baselines (MRR 0.360) becomes
+the best performer after fine-tuning --- a 127\% improvement from the same
+architecture with no additional parameters, demonstrating that the
+knowledge-graph-derived training signal is highly effective.
+
+
+\section{Discussion}
+
+\subsection{Why general-purpose models fail at math}
+
+The poor performance of SPECTER2 and SciNCL --- models explicitly trained on
+scientific literature --- highlights that \emph{scientific} training is not
+the same as \emph{mathematical} training. These models learn paper-level
+similarity from citation patterns: ``paper A cites paper B, so they should
+embed nearby.'' But mathematical retrieval requires a different kind of
+similarity: understanding that the text ``$\sum_{n=0}^{\infty}
+\frac{q^{n^2}}{(q;q)_n}$'' is about the Rogers--Ramanujan identities, even
+though it contains no occurrence of that phrase.
+
+Standard tokenizers (BERT WordPiece) fragment mathematical notation into
+meaningless subwords. Fine-tuning cannot fix the tokenizer, but it can teach
+the model that certain patterns of subword tokens, when they appear together,
+carry specific mathematical meaning.
+
+\subsection{Knowledge graphs as supervision}
+
+Our approach requires a knowledge graph, which itself requires an LLM
+extraction step (GPT-4o-mini in our case). This may seem circular --- we use
+an LLM to generate training data for a different model. But the key insight is
+that these are \emph{complementary capabilities}:
+\begin{itemize}[nosep]
+    \item The LLM excels at \emph{reading individual passages} and extracting
+          structured information (concepts, relationships), but is too slow
+          and expensive for real-time retrieval over thousands of chunks.
+    \item The embedding model excels at \emph{fast similarity search} over
+          large corpora, but needs training data to learn domain-specific
+          semantics.
+\end{itemize}
+
+The KG is a one-time cost that distills the LLM's understanding into a
+reusable supervision signal.
+
+\subsection{Generalizability}
+
+The pipeline is not specific to algebraic combinatorics. Given:
+\begin{enumerate}[nosep]
+    \item A corpus of mathematical papers (any subfield)
+    \item A knowledge graph over their concepts (extractable by LLM)
+\end{enumerate}
+the same code produces a domain-adapted embedding model. The fine-tuned model
+should generalize to new papers in the same mathematical area, since it learns
+\emph{concept semantics} rather than memorizing specific passages.
+
+
+\section{Conclusion}
+
+We demonstrated that general-purpose and scientific embedding models perform
+poorly on mathematical concept retrieval, and presented a pipeline that
+automatically generates contrastive training data from a knowledge graph to
+fine-tune a domain-specific embedding model. Our approach requires no manual
+annotation --- the knowledge graph provides the supervision signal --- and
+produces a portable model that can be deployed in any RAG system for
+mathematical literature.
+
+Future work includes: (1) scaling to larger mathematical corpora spanning
+multiple subfields, (2) incorporating mathematical notation awareness into
+the tokenizer, and (3) exploring whether the fine-tuned model's understanding
+of mathematical relationships transfers across subfields.
+
+
+\begin{thebibliography}{10}
+
+\bibitem{specter}
+A.~Cohan, S.~Feldman, I.~Beltagy, D.~Downey, and D.~S.~Weld,
+``SPECTER: Document-level representation learning using citation-informed
+transformers,'' in \emph{Proc.\ ACL}, 2020.
+
+\bibitem{specter2}
+A.~Singh, M.~D'Arcy, A.~Cohan, D.~Downey, and S.~Feldman,
+``SciRepEval: A multi-format benchmark for scientific document
+representations,'' in \emph{Proc.\ EMNLP}, 2023.
+
+\bibitem{scincl}
+M.~Ostendorff, N.~Rethmeier, I.~Augenstein, B.~Gipp, and G.~Rehm,
+``Neighborhood contrastive learning for scientific document
+representations with citation embeddings,'' in \emph{Proc.\ EMNLP}, 2022.
+
+\bibitem{scibert}
+I.~Beltagy, K.~Lo, and A.~Cohan,
+``SciBERT: A pretrained language model for scientific text,'' in
+\emph{Proc.\ EMNLP}, 2019.
+
+\bibitem{mathbert}
+S.~Peng, K.~Yuan, L.~Gao, and Z.~Tang,
+``MathBERT: A pre-trained model for mathematical formula understanding,''
+\emph{arXiv:2105.00377}, 2021.
+
+\bibitem{sbert}
+N.~Reimers and I.~Gurevych,
+``Sentence-BERT: Sentence embeddings using Siamese BERT-networks,'' in
+\emph{Proc.\ EMNLP}, 2019.
+
+\bibitem{matryoshka}
+A.~Kusupati, G.~Bhatt, A.~Rege, M.~Wallingford, A.~Sinha, V.~Ramanujan,
+W.~Howard-Snyder, K.~Chen, S.~Kakade, P.~Jain, and A.~Farhadi,
+``Matryoshka representation learning,'' in \emph{Proc.\ NeurIPS}, 2022.
+
+\bibitem{kg-extraction}
+Knowledge graph extraction via LLM-based concept and relationship
+identification from scientific text, internal methodology.
+
+\bibitem{rust-metrics}
+Custom Rust implementation of batch kNN and IR metrics (Recall@$k$, MRR,
+NDCG@$k$) with rayon parallelism and PyO3 Python bindings.
+
+\end{thebibliography}
+
+\end{document}

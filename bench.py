@@ -10,8 +10,11 @@ import numpy as np
 AVAILABLE_MODELS = {
     "openai-small": "OpenAI text-embedding-3-small (1536-dim, baseline)",
     "openai-large": "OpenAI text-embedding-3-large (3072-dim)",
+    "specter2": "SPECTER2 proximity — Allen AI, 6M citation triplets (768-dim)",
+    "scincl": "SciNCL — SciBERT + citation contrastive learning (768-dim)",
     "bge-large": "BAAI/bge-large-en-v1.5 via MLX (1024-dim)",
     "qwen3-0.6b": "Qwen3-Embedding-0.6B via MLX (1024-dim)",
+    "math-embed": "Fine-tuned SciBERT on math paper retrieval (768-dim)",
 }
 
 
@@ -23,12 +26,25 @@ def make_model(name: str):
     elif name == "openai-large":
         from embench.models.openai_embed import OpenAILarge
         return OpenAILarge()
+    elif name == "specter2":
+        from embench.models.scientific_embed import Specter2
+        return Specter2()
+    elif name == "scincl":
+        from embench.models.scientific_embed import SciNCL
+        return SciNCL()
     elif name == "bge-large":
         from embench.models.mlx_embed import BGELarge
         return BGELarge()
     elif name == "qwen3-0.6b":
         from embench.models.mlx_embed import Qwen3Embed
         return Qwen3Embed()
+    elif name == "math-embed":
+        from embench.models.scientific_embed import SentenceTransformerEmbed
+        return SentenceTransformerEmbed(
+            "models/math-embed/final",
+            "math-embed",
+            768,
+        )
     else:
         print(f"Unknown model: {name}")
         print(f"Available: {', '.join(AVAILABLE_MODELS)}")
