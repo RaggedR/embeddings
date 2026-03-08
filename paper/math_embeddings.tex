@@ -21,7 +21,7 @@
 
 \title{Knowledge-Graph-Guided Fine-Tuning of Embedding Models\\
 for Mathematical Document Retrieval}
-\author{}
+\author{Robin Langer\thanks{The author thanks Claude (Anthropic) for assistance with code development and manuscript preparation.}}
 \date{}
 
 \begin{document}
@@ -90,8 +90,9 @@ This paper makes the following contributions:
           a knowledge graph (Section~\ref{sec:training-data}).
     \item A fine-tuned embedding model that outperforms all baselines on our
           benchmark (Section~\ref{sec:finetuning}).
-    \item An open-source pipeline\footnote{Available at
-          \url{https://github.com/XXX/embeddings}} that can be applied to any
+    \item An open-source pipeline\footnote{Code available at
+          \url{https://github.com/RaggedR/embeddings}. Model available at
+          \url{https://huggingface.co/RobBobin/math-embed}.} that can be applied to any
           mathematical corpus with an associated knowledge graph.
 \end{enumerate}
 
@@ -201,7 +202,7 @@ Model & Dim & R@5 & R@10 & R@20 & MRR & NDCG@10 \\
 SPECTER2 (proximity) & 768 & 0.007 & 0.013 & 0.024 & 0.360 & 0.225 \\
 SciNCL & 768 & 0.006 & 0.012 & 0.024 & 0.306 & 0.205 \\
 \midrule
-Math-Embed (ours) & 768 & --- & --- & --- & --- & --- \\
+Math-Embed (ours) & 768 & \textbf{0.030} & \textbf{0.058} & \textbf{0.111} & \textbf{0.816} & \textbf{0.736} \\
 \bottomrule
 \end{tabular}
 \end{table}
